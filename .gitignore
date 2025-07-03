@@ -1,0 +1,17 @@
+.env
+.venv
+accounts.json
+*temp*
+build
+dist
+logs
+settings
+main.spec
+__pycache__
+output
+token.pickle
+google_auth.json
+presets
+workflows
+*.spec
+background_music
