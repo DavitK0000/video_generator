@@ -182,7 +182,7 @@ class TableManager:
             # Make status and progress columns read-only
             if col in [TableColumns.STATUS, TableColumns.GEN_PROGRESS, TableColumns.UPLOAD_PROGRESS]:
                 # Set read-only by removing edit flag
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 
             self.table.setItem(row, col.value, item)
         
@@ -1106,33 +1106,6 @@ class BulkGenerationApp(QMainWindow):
         """Safely clean up worker threads with enhanced error handling"""
         if worker:
             try:
-                # Disconnect all signals first to prevent "wrapped C/C++ object has been deleted" errors
-                try:
-                    # Handle generation worker signals
-                    if hasattr(worker, 'progress_update'):
-                        worker.progress_update.disconnect()
-                    if hasattr(worker, 'operation_update'):
-                        worker.operation_update.disconnect()
-                    if hasattr(worker, 'generation_finished'):
-                        worker.generation_finished.disconnect()
-                    if hasattr(worker, 'error_occurred'):
-                        worker.error_occurred.disconnect()
-                    
-                    # Handle upload thread signals
-                    if hasattr(worker, 'progress_signal'):
-                        worker.progress_signal.disconnect()
-                    if hasattr(worker, 'status_signal'):
-                        worker.status_signal.disconnect()
-                    if hasattr(worker, 'finished_signal'):
-                        worker.finished_signal.disconnect()
-                    if hasattr(worker, 'error_signal'):
-                        worker.error_signal.disconnect()
-                    if hasattr(worker, 'token_refresh_signal'):
-                        worker.token_refresh_signal.disconnect()
-                except (TypeError, RuntimeError):
-                    # Signals might already be disconnected or worker might be deleted
-                    pass
-                
                 # Check if worker is still running
                 if worker.isRunning():
                     # First try graceful cancellation
@@ -1258,9 +1231,13 @@ class BulkGenerationApp(QMainWindow):
         if not channel_name:
             channel_name = 'default'
         
+        # Use proper title sanitization instead of simple space replacement
+        from utils import title_to_safe_folder_name
+        safe_video_title = title_to_safe_folder_name(item['video_title'])
+        
         return {
             'api_key': preset['api_key'],
-            'video_title': item['video_title'].replace(' ', '-'),
+            'video_title': safe_video_title,
             'background_music_path': preset.get('background_music', ''),
             'thumbnail_prompt': prompts['thumbnail_prompt'],
             'images_prompt': prompts['images_prompt'],
@@ -1307,9 +1284,9 @@ class BulkGenerationApp(QMainWindow):
                 base_dir = os.path.dirname(os.path.abspath(__file__))
             
             # Create the structured path: ./output/{channel name}/{video title}
-            output_base = os.path.join(base_dir, "output")
-            channel_dir = os.path.join(output_base, channel_name)
-            video_dir = os.path.join(channel_dir, item['video_title'].replace(' ', '-'))
+            # Use create_output_directory to get the correct path with proper sanitization
+            from utils import create_output_directory
+            video_dir = create_output_directory(item['video_title'], channel_name)
             
             video_path = os.path.join(video_dir, "final_slideshow_with_audio.mp4")
             thumbnail_path = os.path.join(video_dir, "thumbnail.jpg")
@@ -1380,42 +1357,24 @@ class BulkGenerationApp(QMainWindow):
     # Signal handlers
     def on_generation_progress(self, progress):
         """Handle generation progress update"""
-        try:
-            # Check if the worker is still valid
-            if not self.generation_worker or not hasattr(self.generation_worker, 'isRunning'):
-                return
-            
-            self.update_row_status(self.current_index, "Processing", f"{progress}%", "0%")
-            # Calculate total generation progress across all items
-            # Each item contributes equally to the total progress
-            if self.current_index == len(self.generation_data) - 1 and progress == 100:
-                # If this is the last item and it's at 100%, set total to 100%
-                total_progress = 100
-            else:
-                # Otherwise calculate based on current progress
-                total_progress = int((self.current_index + (progress/100)) / len(self.generation_data) * 100)
-            self.generation_progress.setValue(total_progress)
-        except Exception as e:
-            self.logger.warning(f"Error in generation progress handler: {e}")
+        self.update_row_status(self.current_index, "Processing", f"{progress}%", "0%")
+        # Calculate total generation progress across all items
+        # Each item contributes equally to the total progress
+        if self.current_index == len(self.generation_data) - 1 and progress == 100:
+            # If this is the last item and it's at 100%, set total to 100%
+            total_progress = 100
+        else:
+            # Otherwise calculate based on current progress
+            total_progress = int((self.current_index + (progress/100)) / len(self.generation_data) * 100)
+        self.generation_progress.setValue(total_progress)
     
     def on_generation_operation(self, operation):
         """Handle generation operation update"""
-        try:
-            # Check if the worker is still valid
-            if not self.generation_worker or not hasattr(self.generation_worker, 'isRunning'):
-                return
-            
-            self.update_status(f"[{self.current_index + 1}/{len(self.generation_data)}] {operation}")
-        except Exception as e:
-            self.logger.warning(f"Error in generation operation handler: {e}")
+        self.update_status(f"[{self.current_index + 1}/{len(self.generation_data)}] {operation}")
     
     def on_generation_finished(self, description):
         """Handle generation completion"""
         try:
-            # Check if the worker is still valid
-            if not self.generation_worker or not hasattr(self.generation_worker, 'isRunning'):
-                return
-            
             if description is None:
                 self.logger.error("Generation finished with no description")
                 self.handle_item_error("Generation failed: No description provided")
@@ -1457,21 +1416,14 @@ class BulkGenerationApp(QMainWindow):
     
     def on_generation_error(self, error_message):
         """Handle generation error"""
-        try:
-            # Check if the worker is still valid
-            if not self.generation_worker or not hasattr(self.generation_worker, 'isRunning'):
-                return
-            
-            # Set regeneration flag
-            if self.current_index < len(self.generation_data):
-                row_data = self.table_manager.get_row_data(self.current_index)
-                if row_data:
-                    row_data.needs_regeneration = True
-                    row_data.needs_reupload = False
-                    row_data.saved_description = ''
-                    self.table_manager.update_row(self.current_index, row_data)
-        except Exception as e:
-            self.logger.warning(f"Error in generation error handler: {e}")
+        # Set regeneration flag
+        if self.current_index < len(self.generation_data):
+            row_data = self.table_manager.get_row_data(self.current_index)
+            if row_data:
+                row_data.needs_regeneration = True
+                row_data.needs_reupload = False
+                row_data.saved_description = ''
+                self.table_manager.update_row(self.current_index, row_data)
         
         # Clean up the current worker with better error handling
         self.safe_worker_cleanup(self.generation_worker)

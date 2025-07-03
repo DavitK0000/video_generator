@@ -125,10 +125,13 @@ def create_output_directory(video_title: str, channel_name: str = "default") -> 
             # Running as script - use directory containing the script
             base_dir = os.path.dirname(os.path.abspath(__file__))
         
+        # Convert video title to safe folder name
+        safe_video_title = title_to_safe_folder_name(video_title)
+        
         # Create the structured path: ./output/{channel name}/{video title}
         output_base = os.path.join(base_dir, "output")
         channel_dir = os.path.join(output_base, channel_name)
-        video_dir = os.path.join(channel_dir, video_title)
+        video_dir = os.path.join(channel_dir, safe_video_title)
         
         # Create all directories in the path
         os.makedirs(video_dir, exist_ok=True)
@@ -137,8 +140,9 @@ def create_output_directory(video_title: str, channel_name: str = "default") -> 
         return video_dir
     except Exception as e:
         logging.error(f"Failed to create output directory: {str(e)}")
-        # Fall back to simple structure
-        fallback_dir = os.path.join(base_dir, "output", video_title)
+        # Fall back to simple structure with safe title
+        safe_video_title = title_to_safe_folder_name(video_title)
+        fallback_dir = os.path.join(base_dir, "output", safe_video_title)
         os.makedirs(fallback_dir, exist_ok=True)
         return fallback_dir
 
@@ -452,38 +456,92 @@ def get_first_paragraph(text):
     return ""
 
 def title_to_safe_folder_name(title: str) -> str:
+    """
+    Convert a title to a safe folder name by removing/replacing Windows-incompatible characters.
+    Uses simple ASCII replacements that are compatible with FFmpeg and other tools.
+    
+    Args:
+        title: The original title to convert
+        
+    Returns:
+        A safe folder name that can be used on Windows, Linux, and macOS
+    """
     # Start with the original title
     safe_title = title.strip()
     
-    # Replace only the characters that are truly problematic for folder names
-    # These are the characters that are invalid in Windows, Linux, and macOS file systems
+    # Replace Windows-incompatible characters with simple ASCII equivalents
+    # These are safe for FFmpeg and other command-line tools
     problematic_chars = {
-        '<': '＜',   # Replace with full-width equivalents
-        '>': '＞',
-        ':': '：',
-        '"': '＂',
-        '|': '｜',
-        '?': '？',
-        '*': '＊',
-        '/': '／',
-        '\\': '＼',
-        '\0': '',    # Remove null characters
-        '\n': ' ',   # Replace newlines with spaces
-        '\r': ' ',   # Replace carriage returns with spaces
-        '\t': ' ',   # Replace tabs with spaces
+        # Windows invalid characters (replaced with simple ASCII)
+        '<': '-',    # Less than -> hyphen
+        '>': '-',    # Greater than -> hyphen
+        ':': '-',    # Colon -> hyphen
+        '"': '-',    # Double quote -> hyphen (avoid quotes in paths)
+        "'": '-',    # Single quote -> hyphen (avoid quotes in paths)
+        '|': '-',    # Vertical bar/pipe -> hyphen
+        '?': '',     # Question mark -> remove
+        '*': '',     # Asterisk -> remove
+        '/': '-',    # Forward slash -> hyphen
+        '\\': '-',   # Backslash -> hyphen
+        
+        # Control characters (remove completely)
+        '\0': '',    # Null character
+        '\x01': '',  # Start of heading
+        '\x02': '',  # Start of text
+        '\x03': '',  # End of text
+        '\x04': '',  # End of transmission
+        '\x05': '',  # Enquiry
+        '\x06': '',  # Acknowledge
+        '\x07': '',  # Bell
+        '\x08': '',  # Backspace
+        '\x0b': '',  # Vertical tab
+        '\x0c': '',  # Form feed
+        '\x0e': '',  # Shift out
+        '\x0f': '',  # Shift in
+        '\x10': '',  # Data link escape
+        '\x11': '',  # Device control 1
+        '\x12': '',  # Device control 2
+        '\x13': '',  # Device control 3
+        '\x14': '',  # Device control 4
+        '\x15': '',  # Negative acknowledge
+        '\x16': '',  # Synchronous idle
+        '\x17': '',  # End of transmission block
+        '\x18': '',  # Cancel
+        '\x19': '',  # End of medium
+        '\x1a': '',  # Substitute
+        '\x1b': '',  # Escape
+        '\x1c': '',  # File separator
+        '\x1d': '',  # Group separator
+        '\x1e': '',  # Record separator
+        '\x1f': '',  # Unit separator
+        
+        # Whitespace characters (replace with space)
+        '\n': ' ',   # Newline
+        '\r': ' ',   # Carriage return
+        '\t': ' ',   # Tab
+        '\v': ' ',   # Vertical tab
+        '\f': ' ',   # Form feed
     }
     
     # Replace problematic characters
     for bad_char, replacement in problematic_chars.items():
         safe_title = safe_title.replace(bad_char, replacement)
     
-    # Replace smart quotes and em/en dashes with similar Unicode equivalents
-    safe_title = safe_title.replace("'", "'").replace("'", "'") \
-                          .replace(""", "＂").replace(""", "＂") \
-                          .replace("—", "－").replace("–", "－")
+    # Replace smart quotes and em/en dashes with simple ASCII equivalents
+    safe_title = safe_title.replace("'", "-").replace("'", "-") \
+                          .replace(""", "-").replace(""", "-") \
+                          .replace("—", "-").replace("–", "-")
     
-    # Clean up multiple consecutive spaces
-    safe_title = re.sub(r'\s+', ' ', safe_title).strip()
+    # Clean up multiple consecutive spaces and hyphens
+    safe_title = re.sub(r'\s+', ' ', safe_title)  # Multiple spaces -> single space
+    safe_title = re.sub(r'-+', '-', safe_title)   # Multiple hyphens -> single hyphen
+    safe_title = safe_title.strip()
+    
+    # Replace spaces with hyphens for URL-friendly folder names
+    safe_title = safe_title.replace(' ', '-')
+    
+    # Remove leading/trailing hyphens and dots (Windows doesn't like these)
+    safe_title = safe_title.strip('-.')
     
     # Handle edge case: if title becomes empty, use a fallback
     if not safe_title:
@@ -494,8 +552,9 @@ def title_to_safe_folder_name(title: str) -> str:
         safe_title = f"video_{timestamp}_{hash_short}"
     
     # Truncate if too long (Windows path limit consideration)
+    # Windows has a 260 character path limit, so we need to be conservative
     if len(safe_title) > 100:  # Leave room for file extensions and path
-        safe_title = safe_title[:100].rstrip()
+        safe_title = safe_title[:100].rstrip('-.')  # Remove trailing hyphens/dots after truncation
     
     return safe_title
 

@@ -1692,25 +1692,15 @@ class VideoGeneratorApp(QMainWindow):
     def _prepare_upload_params(self, description):
         """Prepare parameters for video upload"""
         video_title = self.video_title_input.text()
-        safe_folder = title_to_safe_folder_name(self.video_title)
         
         # Get channel name from the UI
         channel_name = self.channel_edit.text().strip()
         if not channel_name:
             channel_name = "default"  # Use default if no channel is selected
         
-        # Determine the base directory (same level as exe file)
-        if getattr(sys, 'frozen', False):
-            # Running as PyInstaller executable - use directory containing the executable
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            # Running as script - use directory containing the script
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Create the structured path: ./output/{channel name}/{video title}
-        output_base = os.path.join(base_dir, "output")
-        channel_dir = os.path.join(output_base, channel_name)
-        video_dir = os.path.join(channel_dir, safe_folder)
+        # Use create_output_directory to get the correct path
+        from utils import create_output_directory
+        video_dir = create_output_directory(video_title, channel_name)
         
         params = {
             'credentials': self.credentials,

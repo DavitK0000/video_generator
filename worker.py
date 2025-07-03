@@ -1067,7 +1067,7 @@ class GenerationWorker(BaseWorker):
                         self.logger.error(f"particles.webm not found at {particles_path}")
                         self.logger.info(f"Current working directory: {os.getcwd()}")
                         self.logger.info(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
-                        meipass = getattr(sys, '_MEIPASS', None)  # type: ignore
+                        meipass = getattr(sys, '_MEIPASS', None)
                         if meipass is not None:
                             self.logger.info(f"PyInstaller temp path: {meipass}")
                         
@@ -1297,7 +1297,7 @@ class GenerationWorker(BaseWorker):
                 # Initialize
                 with self._step_timer("Initialization"):
                     self.operation_update.emit("Initializing")
-                    output_dir = create_output_directory(title_to_safe_folder_name(self.video_title), self.channel_name)
+                    output_dir = create_output_directory(self.video_title, self.channel_name)
                     openai_helper = OpenAIHelper(self.api_key)
                     self.progress_update.emit(5)
 
@@ -1330,39 +1330,20 @@ class GenerationWorker(BaseWorker):
                     audio_list_file = os.path.join(self.temp_dir, 'audios.txt')
                     with open(audio_list_file, 'w', encoding='utf-8') as f:
                         for i in range(1, len(audio_chunks) + 1):
-                            # Use relative paths from temp_dir to output_dir
-                            relative_path = os.path.relpath(os.path.join(output_dir, f"audio{i}.wav"), self.temp_dir)
                             # Use forward slashes for better cross-platform compatibility
-                            relative_path = relative_path.replace('\\', '/')
-                            f.write(f"file '{relative_path}'\n")
+                            path = os.path.abspath(os.path.join(output_dir, f"audio{i}.wav")).replace('\\', '/')
+                            # Escape single quotes in the path for FFmpeg concat format
+                            # Replace single quotes with escaped single quotes
+                            escaped_path = path.replace("'", "\\'")
+                            f.write(f"file '{escaped_path}'\n")
 
                     merged_wav = os.path.join(self.temp_dir, 'merged_audio.wav')
-                    
-                    # Verify audios.txt file exists before using it
-                    if not os.path.exists(audio_list_file):
-                        raise Exception(f"Audio list file not found: {audio_list_file}")
-                    
-                    # Log the contents of audios.txt for debugging
-                    with open(audio_list_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        self.logger.info(f"Audio list file contents (first 500 chars): {content[:500]}")
-                    
-                    # Verify all audio files exist
-                    missing_audio_files = []
-                    for i in range(1, len(audio_chunks) + 1):
-                        audio_file = os.path.join(output_dir, f"audio{i}.wav")
-                        if not os.path.exists(audio_file):
-                            missing_audio_files.append(f"audio{i}.wav")
-                    
-                    if missing_audio_files:
-                        raise Exception(f"Missing audio files: {', '.join(missing_audio_files)}")
-                    
                     self._safe_subprocess_run([
                         'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                         '-i', audio_list_file, 
                         '-c', 'copy',
                         merged_wav
-                    ], timeout=450, cwd=self.temp_dir)
+                    ], timeout=450)
 
                     # Verify merged audio was created
                     if not os.path.exists(merged_wav):
@@ -1405,7 +1386,7 @@ class GenerationWorker(BaseWorker):
 
             except Exception as e:
                 # Clean up any remaining processes before reporting error
-                self._cleanup_processes()
+                # self._cleanup_processes()
                 
                 if self.start_time:
                     error_runtime = time.time() - self.start_time
@@ -1427,14 +1408,14 @@ class GenerationWorker(BaseWorker):
                 traceback.print_exc()
             finally:
                 # Ensure cleanup happens regardless of success or failure
-                self._cleanup_processes()
+                # self._cleanup_processes()
                 if self.temp_dir:
                     self.logger.info(f"Cleaning up temporary directory: {self.temp_dir}")
-                    cleanup_temp_dir(self.temp_dir)
+                    # cleanup_temp_dir(self.temp_dir)
                     self.temp_dir = ""
         except Exception as e:
             # Clean up any remaining processes before reporting error
-            self._cleanup_processes()
+            # self._cleanup_processes()
             
             if self.start_time:
                 error_runtime = time.time() - self.start_time
@@ -1456,8 +1437,8 @@ class GenerationWorker(BaseWorker):
             traceback.print_exc()
         finally:
             # Ensure cleanup happens regardless of success or failure
-            self._cleanup_processes()
+            # self._cleanup_processes()
             if self.temp_dir:
                 self.logger.info(f"Cleaning up temporary directory: {self.temp_dir}")
-                cleanup_temp_dir(self.temp_dir)
+                # cleanup_temp_dir(self.temp_dir)
                 self.temp_dir = ""
