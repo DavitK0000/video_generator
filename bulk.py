@@ -179,10 +179,14 @@ class TableManager:
                 value = "Yes" if value else "No"
             item = QTableWidgetItem(str(value))
             
+            # Store youtube_upload_enabled as data in the first column item
+            if col == TableColumns.VIDEO_TITLE:
+                item.setData(Qt.ItemDataRole.UserRole, data.youtube_upload_enabled)
+            
             # Make status and progress columns read-only
             if col in [TableColumns.STATUS, TableColumns.GEN_PROGRESS, TableColumns.UPLOAD_PROGRESS]:
                 # Set read-only by removing edit flag
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                 
             self.table.setItem(row, col.value, item)
         
@@ -211,6 +215,14 @@ class TableManager:
                 if col.name.lower() in ['youtube_upload_enabled', 'needs_regeneration', 'needs_reupload']:
                     value = value.lower() in ['true', '1', 'yes', 'on']
                 setattr(data, col.name.lower(), value)
+        
+        # Get youtube_upload_enabled from stored data in the first column
+        video_title_item = self.table.item(row, TableColumns.VIDEO_TITLE.value)
+        if video_title_item:
+            youtube_upload_enabled = video_title_item.data(Qt.ItemDataRole.UserRole)
+            if youtube_upload_enabled is not None:
+                data.youtube_upload_enabled = youtube_upload_enabled
+        
         return data
     
     def validate_and_color_row(self, row: int, data: RowData) -> bool:
@@ -437,7 +449,13 @@ class SettingsDialog(QDialog):
         self.category_id_edit.setText(data.get('category', '24'))
         
         # Load YouTube upload setting
-        youtube_upload_enabled = bool(data.get('youtube_upload_enabled', False))
+        youtube_upload_enabled = data.get('youtube_upload_enabled', False)
+        # Handle both boolean and string representations
+        if isinstance(youtube_upload_enabled, str):
+            youtube_upload_enabled = youtube_upload_enabled.lower() in ['true', '1', 'yes', 'on']
+        else:
+            youtube_upload_enabled = bool(youtube_upload_enabled)
+        
         self.youtube_upload_checkbox.setChecked(youtube_upload_enabled)
         self.toggle_youtube_upload(Qt.CheckState.Checked if youtube_upload_enabled else Qt.CheckState.Unchecked)
         
@@ -879,7 +897,13 @@ class BulkGenerationApp(QMainWindow):
         if not row_data:
             return
         
-        dialog = SettingsDialog(self, row_data.__dict__, accounts=self.account_manager.get_accounts_list())
+        # Create a dictionary with all the data, including youtube_upload_enabled
+        row_dict = row_data.__dict__.copy()
+        # Ensure youtube_upload_enabled is preserved
+        if not hasattr(row_data, 'youtube_upload_enabled'):
+            row_data.youtube_upload_enabled = False
+        
+        dialog = SettingsDialog(self, row_dict, accounts=self.account_manager.get_accounts_list())
         if dialog.exec_() == QDialog.Accepted:
             if not dialog.video_title_edit.text().strip():
                 QMessageBox.warning(self, "Input Error", "Video title cannot be empty.")
@@ -926,10 +950,17 @@ class BulkGenerationApp(QMainWindow):
             # Process each row
             for _, row in df.iterrows():
                 try:
+                    # Handle youtube_upload_enabled field properly
+                    youtube_upload_enabled = row.get('youtube_upload_enabled', False)
+                    if isinstance(youtube_upload_enabled, str):
+                        youtube_upload_enabled = youtube_upload_enabled.lower() in ['true', '1', 'yes', 'on']
+                    else:
+                        youtube_upload_enabled = bool(youtube_upload_enabled)
+                    
                     data = RowData(
                         video_title=str(row.get('video_title', '')).strip(),
                         preset_path=str(row.get('preset_path', '')).strip(),
-                        youtube_upload_enabled=bool(row.get('youtube_upload_enabled', False)),
+                        youtube_upload_enabled=youtube_upload_enabled,
                         channel_name=str(row.get('channel_name', '')).strip(),
                         account=str(row.get('account', '')).strip(),
                         category=str(row.get('category', '24')).strip(),
@@ -1288,8 +1319,12 @@ class BulkGenerationApp(QMainWindow):
             from utils import create_output_directory
             video_dir = create_output_directory(item['video_title'], channel_name)
             
-            video_path = os.path.join(video_dir, "final_slideshow_with_audio.mp4")
-            thumbnail_path = os.path.join(video_dir, "thumbnail.jpg")
+            # Get the safe video title for file naming
+            from utils import title_to_safe_file_name
+            safe_title = title_to_safe_file_name(item['video_title'])
+            
+            video_path = os.path.join(video_dir, f"{safe_title}.mp4")
+            thumbnail_path = os.path.join(video_dir, f"{safe_title}.jpg")
             
             # Prepare upload parameters
             upload_params = {

@@ -330,6 +330,24 @@ class GenerationWorker(BaseWorker):
         if not self.ffmpeg_path or not self.ffprobe_path:
             raise Exception("FFmpeg and/or FFprobe not found. Please ensure FFmpeg is installed and in the system PATH.")
 
+    def _get_output_paths(self, output_dir: str) -> Dict[str, str]:
+        """Get the correct paths for different file types in the new folder structure"""
+        # output_dir is the final files directory (where final files go)
+        # We need to get the parent directory to access the subdirectories
+        main_video_dir = os.path.dirname(output_dir)  # This is the main video folder
+        
+        return {
+            'main': output_dir,  # Final files (video, thumbnail, script)
+            'images': os.path.join(main_video_dir, "images"),  # Generated images
+            'voice_over': os.path.join(main_video_dir, "voice-over"),  # Audio files and subtitles
+            'prompts': os.path.join(main_video_dir, "prompts"),  # Generated prompts
+        }
+
+    def _get_safe_video_title(self) -> str:
+        """Get the safe video title for file naming"""
+        from utils import title_to_safe_file_name
+        return title_to_safe_file_name(self.video_title)
+
     def _find_ffmpeg(self) -> str:
         """Find the FFmpeg executable path"""
         # First check if ffmpeg is in the same directory as the script
@@ -389,6 +407,10 @@ class GenerationWorker(BaseWorker):
         idx, audio_chunk, output_dir = audio_task
         max_retries = 3
         
+        # Get the correct paths for the new folder structure
+        paths = self._get_output_paths(output_dir)
+        voice_over_dir = paths['voice_over']
+        
         for attempt in range(max_retries):
             try:
                 self._check_cancelled()
@@ -415,8 +437,8 @@ class GenerationWorker(BaseWorker):
                     
                 audio_data = base64.b64decode(result['audio_base64'])
                 
-                # Save to file with correct naming
-                audio_filename = os.path.join(output_dir, f"audio{idx+1}.wav")
+                # Save to file with correct naming in voice-over directory
+                audio_filename = os.path.join(voice_over_dir, f"audio{idx+1}.wav")
                 with open(audio_filename, 'wb') as f:
                     f.write(audio_data)
 
@@ -430,8 +452,8 @@ class GenerationWorker(BaseWorker):
                         
                     if response.status_code == 200:
                         result = response.json()
-                        # Save individual SRT file
-                        with open(os.path.join(output_dir, f"subtitle{idx+1}.srt"), 'w', encoding='utf-8') as f:
+                        # Save individual SRT file in voice-over directory
+                        with open(os.path.join(voice_over_dir, f"subtitle{idx+1}.srt"), 'w', encoding='utf-8') as f:
                             f.write(result['srt_content'])
                         self.logger.info(f"Generated transcription for audio {idx + 1}")
                     else:
@@ -469,6 +491,10 @@ class GenerationWorker(BaseWorker):
     def _generate_audio_parallel(self, audio_chunks: List[str], output_dir: str, max_workers: int = 4) -> bool:
         """Generate audio files in parallel with up to 4 concurrent threads"""
         self.logger.info(f"🎵 Starting parallel audio generation with {max_workers} workers")
+        
+        # Get the correct paths for the new folder structure
+        paths = self._get_output_paths(output_dir)
+        voice_over_dir = paths['voice_over']
         
         # Reset progress tracking
         with self.audio_progress_lock:
@@ -508,7 +534,7 @@ class GenerationWorker(BaseWorker):
         # Verify all files exist
         missing_files = []
         for idx in range(len(audio_chunks)):
-            filename = os.path.join(output_dir, f"audio{idx+1}.wav")
+            filename = os.path.join(voice_over_dir, f"audio{idx+1}.wav")
             if not os.path.exists(filename):
                 missing_files.append(f"audio{idx+1}.wav")
         
@@ -637,8 +663,12 @@ class GenerationWorker(BaseWorker):
                     else:
                         generated_prompt, _ = result
                     
+                    # Get the correct paths for the new folder structure
+                    paths = self._get_output_paths(output_dir)
+                    prompts_dir = paths['prompts']
+                    
                     # Save the generated prompt
-                    with open(os.path.join(output_dir, 'thumbnail-prompt.txt'), 'w', encoding='utf-8') as f:
+                    with open(os.path.join(prompts_dir, 'thumbnail-prompt.txt'), 'w', encoding='utf-8') as f:
                         f.write(generated_prompt)
                     
                     # Generate image using local Runware service
@@ -724,15 +754,17 @@ class GenerationWorker(BaseWorker):
                             top = (new_height - 720) // 2
                             img = img.crop((0, top, 1280, top + 720))
                         
-                        # Save the final image
-                        thumbnail_path = os.path.join(output_dir, 'thumbnail.jpg')
+                        # Save the final image in main directory with proper filename
+                        safe_title = self._get_safe_video_title()
+                        thumbnail_path = os.path.join(output_dir, f'{safe_title}.jpg')
                         img.save(thumbnail_path, "JPEG", quality=95)
                         self.logger.info(f"Successfully saved thumbnail to: {thumbnail_path}")
                         
                     except ImportError:
                         self.logger.warning("PIL not available, saving original image...")
                         # If PIL is not available, save the original image
-                        thumbnail_path = os.path.join(output_dir, 'thumbnail.jpg')
+                        safe_title = self._get_safe_video_title()
+                        thumbnail_path = os.path.join(output_dir, f'{safe_title}.jpg')
                         with open(thumbnail_path, 'wb') as f:
                             f.write(image_data)
                         self.logger.info(f"Successfully saved original image to: {thumbnail_path}")
@@ -784,8 +816,12 @@ class GenerationWorker(BaseWorker):
                 else:
                     generated_prompt, _ = result
                 
+                # Get the correct paths for the new folder structure
+                paths = self._get_output_paths(output_dir)
+                prompts_dir = paths['prompts']
+                
                 # Save the generated prompt
-                with open(os.path.join(output_dir, f"image{idx + 1}-prompt.txt"), 'w', encoding='utf-8') as f:
+                with open(os.path.join(prompts_dir, f"image{idx + 1}-prompt.txt"), 'w', encoding='utf-8') as f:
                     f.write(generated_prompt)
                 
                 # Update the prompt in generate params
@@ -841,14 +877,16 @@ class GenerationWorker(BaseWorker):
                         top = (new_height - 1080) // 2
                         img = img.crop((0, top, 1920, top + 1080))
                     
-                    # Save the final image
-                    image_path = os.path.join(output_dir, f'image{idx + 1}.jpg')
+                    # Save the final image in images directory
+                    images_dir = paths['images']
+                    image_path = os.path.join(images_dir, f'image{idx + 1}.jpg')
                     img.save(image_path, "JPEG", quality=95)
                     
                 except ImportError:
                     self.logger.warning("PIL not available, saving original image...")
                     # If PIL is not available, save the original image
-                    image_path = os.path.join(output_dir, f'image{idx + 1}.jpg')
+                    images_dir = paths['images']
+                    image_path = os.path.join(images_dir, f'image{idx + 1}.jpg')
                     with open(image_path, 'wb') as f:
                         f.write(response.content)
                 
@@ -966,10 +1004,14 @@ class GenerationWorker(BaseWorker):
                 failed_indices = [str(idx + 1) for idx, _ in failed_tasks if idx >= 0]
                 raise Exception(f"Failed to generate images: {', '.join(failed_indices)}")
             
+            # Get the correct paths for the new folder structure
+            paths = self._get_output_paths(output_dir)
+            images_dir = paths['images']
+            
             # Verify all files exist
             missing_files = []
             for idx in range(len(image_chunks)):
-                filename = os.path.join(output_dir, f"image{idx+1}.jpg")
+                filename = os.path.join(images_dir, f"image{idx+1}.jpg")
                 if not os.path.exists(filename):
                     missing_files.append(f"image{idx+1}.jpg")
             
@@ -995,7 +1037,10 @@ class GenerationWorker(BaseWorker):
                     self._check_system_resources()
                     gc.collect()  # Force garbage collection
                 
-                img = os.path.join(output_dir, f"image{idx}.jpg")
+                # Get the correct paths for the new folder structure
+                paths = self._get_output_paths(output_dir)
+                images_dir = paths['images']
+                img = os.path.join(images_dir, f"image{idx}.jpg")
                 out_clip = os.path.join(self.temp_dir, f'zoom{idx}.mp4')
                 zoom_clips.append(os.path.abspath(out_clip))
 
@@ -1147,7 +1192,9 @@ class GenerationWorker(BaseWorker):
 
             self.logger.info("Combining video with audio and subtitles...")
             # Combine video with audio and subtitles
-            srt_path = os.path.join(output_dir, "subtitle.srt")
+            paths = self._get_output_paths(output_dir)
+            voice_over_dir = paths['voice_over']
+            srt_path = os.path.join(voice_over_dir, "subtitle.srt")
             
             # Verify required files exist
             if not os.path.exists(srt_path):
@@ -1172,7 +1219,7 @@ class GenerationWorker(BaseWorker):
                         '-c:v', 'libx264', '-c:a', 'aac',
                         '-vf', f"subtitles='{escaped_srt_path}':force_style='FontSize=16,Bold=1,FontName={font_name},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,Outline=1,Shadow=1,BackColour=&H000000&'",
                         '-shortest', 
-                        os.path.join(output_dir, 'final_slideshow_with_audio.mp4')
+                        os.path.join(output_dir, f'{self._get_safe_video_title()}.mp4')
                     ]
                 else:
                     cmd_final = [
@@ -1189,7 +1236,7 @@ class GenerationWorker(BaseWorker):
                         '-map', '[mixed_audio]',
                         '-c:a', 'aac',
                         '-shortest',
-                        os.path.join(output_dir, 'final_slideshow_with_audio.mp4')
+                        os.path.join(output_dir, f'{self._get_safe_video_title()}.mp4')
                     ]
             else:
                 cmd_final = [
@@ -1197,7 +1244,7 @@ class GenerationWorker(BaseWorker):
                     '-c:v', 'libx264', '-c:a', 'aac',
                     '-vf', f"subtitles='{escaped_srt_path}':force_style='FontSize=16,Bold=1,FontName={font_name},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,Outline=1,Shadow=1,BackColour=&H000000&'",
                     '-shortest', 
-                    os.path.join(output_dir, 'final_slideshow_with_audio.mp4')
+                    os.path.join(output_dir, f'{self._get_safe_video_title()}.mp4')
                 ]
 
             gc.collect()
@@ -1205,7 +1252,7 @@ class GenerationWorker(BaseWorker):
             self.progress_update.emit(100)  # Update progress to 100% after final assembly
             
             # Verify final output
-            final_output = os.path.join(output_dir, 'final_slideshow_with_audio.mp4')
+            final_output = os.path.join(output_dir, f'{self._get_safe_video_title()}.mp4')
             if not os.path.exists(final_output):
                 raise Exception("Failed to create final video output")
                 
@@ -1238,11 +1285,15 @@ class GenerationWorker(BaseWorker):
 
     def _merge_srt_files(self, output_dir: str, num_files: int) -> None:
         """Merge multiple SRT files into one, adjusting timestamps (sync)"""
+        # Get the correct paths for the new folder structure
+        paths = self._get_output_paths(output_dir)
+        voice_over_dir = paths['voice_over']
+        
         total_offset = 0
         merged_content = []
         subtitle_number = 1
         for i in range(1, num_files + 1):
-            srt_path = os.path.join(output_dir, f"subtitle{i}.srt")
+            srt_path = os.path.join(voice_over_dir, f"subtitle{i}.srt")
             if not os.path.exists(srt_path):
                 self.logger.warning(f"Missing SRT file: {srt_path}")
                 continue
@@ -1263,11 +1314,11 @@ class GenerationWorker(BaseWorker):
                 merged_content.append(new_entry)
                 subtitle_number += 1
             # Get duration of current file to add to offset
-            audio_path = os.path.join(output_dir, f"audio{i}.wav")
+            audio_path = os.path.join(voice_over_dir, f"audio{i}.wav")
             if os.path.exists(audio_path):
                 total_offset += self._get_duration(audio_path)
         # Write merged SRT
-        with open(os.path.join(output_dir, "subtitle.srt"), 'w', encoding='utf-8') as f:
+        with open(os.path.join(voice_over_dir, "subtitle.srt"), 'w', encoding='utf-8') as f:
             f.write('\n\n'.join(merged_content))
 
     def _parse_srt_time(self, time_str: str) -> float:
@@ -1305,7 +1356,9 @@ class GenerationWorker(BaseWorker):
                 intro_script, looping_script, outro_script = self._generate_scripts(openai_helper)
                 total_script = sanitize_for_script(f"{intro_script}\n\n{looping_script}\n\n{outro_script}")
                 
-                with open(os.path.join(output_dir, 'script.txt'), 'w', encoding='utf-8') as file:
+                # Save script in main directory with proper filename
+                safe_title = self._get_safe_video_title()
+                with open(os.path.join(output_dir, f'{safe_title}.txt'), 'w', encoding='utf-8') as file:
                     file.write(total_script)
 
                 # Generate thumbnail
@@ -1328,10 +1381,14 @@ class GenerationWorker(BaseWorker):
                     # Merge audio files
                     self.logger.info("Merging audio files...")
                     audio_list_file = os.path.join(self.temp_dir, 'audios.txt')
+                    # Get the correct paths for the new folder structure
+                    paths = self._get_output_paths(output_dir)
+                    voice_over_dir = paths['voice_over']
+                    
                     with open(audio_list_file, 'w', encoding='utf-8') as f:
                         for i in range(1, len(audio_chunks) + 1):
                             # Use forward slashes for better cross-platform compatibility
-                            path = os.path.abspath(os.path.join(output_dir, f"audio{i}.wav")).replace('\\', '/')
+                            path = os.path.abspath(os.path.join(voice_over_dir, f"audio{i}.wav")).replace('\\', '/')
                             # Escape single quotes in the path for FFmpeg concat format
                             # Replace single quotes with escaped single quotes
                             escaped_path = path.replace("'", "\\'")
@@ -1386,7 +1443,7 @@ class GenerationWorker(BaseWorker):
 
             except Exception as e:
                 # Clean up any remaining processes before reporting error
-                # self._cleanup_processes()
+                self._cleanup_processes()
                 
                 if self.start_time:
                     error_runtime = time.time() - self.start_time
@@ -1408,14 +1465,14 @@ class GenerationWorker(BaseWorker):
                 traceback.print_exc()
             finally:
                 # Ensure cleanup happens regardless of success or failure
-                # self._cleanup_processes()
+                self._cleanup_processes()
                 if self.temp_dir:
                     self.logger.info(f"Cleaning up temporary directory: {self.temp_dir}")
-                    # cleanup_temp_dir(self.temp_dir)
+                    cleanup_temp_dir(self.temp_dir)
                     self.temp_dir = ""
         except Exception as e:
             # Clean up any remaining processes before reporting error
-            # self._cleanup_processes()
+            self._cleanup_processes()
             
             if self.start_time:
                 error_runtime = time.time() - self.start_time
@@ -1437,8 +1494,8 @@ class GenerationWorker(BaseWorker):
             traceback.print_exc()
         finally:
             # Ensure cleanup happens regardless of success or failure
-            # self._cleanup_processes()
+            self._cleanup_processes()
             if self.temp_dir:
                 self.logger.info(f"Cleaning up temporary directory: {self.temp_dir}")
-                # cleanup_temp_dir(self.temp_dir)
+                cleanup_temp_dir(self.temp_dir)
                 self.temp_dir = ""

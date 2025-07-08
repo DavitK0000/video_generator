@@ -1702,10 +1702,14 @@ class VideoGeneratorApp(QMainWindow):
         from utils import create_output_directory
         video_dir = create_output_directory(video_title, channel_name)
         
+        # Get the safe video title for file naming
+        from utils import title_to_safe_file_name
+        safe_title = title_to_safe_file_name(video_title)
+        
         params = {
             'credentials': self.credentials,
-            'video_path': os.path.join(video_dir, "final_slideshow_with_audio.mp4"),
-            'thumbnail_path': os.path.join(video_dir, "thumbnail.jpg"),
+            'video_path': os.path.join(video_dir, f"{safe_title}.mp4"),
+            'thumbnail_path': os.path.join(video_dir, f"{safe_title}.jpg"),
             'title': video_title,
             'description': description + "\n\n" + self.disclaimer_input.toPlainText(),
             'category': self.category_id_edit.text(),

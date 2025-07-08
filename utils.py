@@ -108,12 +108,21 @@ def save_audio_as_file(
 
 def create_output_directory(video_title: str, channel_name: str = "default") -> str:
     """
-    Create output directory with structured hierarchy: ./output/{channel name}/{video title}
+    Create output directory with structured hierarchy: 
+    ./output/{channel name}/{video title}/
+    ├── images/
+    ├── voice-over/
+    ├── prompts/
+    └── {video title}/
+        ├── {video title}.mp4
+        ├── {video title}.jpg
+        └── {video title}.txt
+    
     Args:
         video_title: Video title (will be converted to safe folder name)
         channel_name: Channel name for organizing videos
     Returns:
-        Path to created directory
+        Path to created main directory (the one containing the final files)
     """
     from datetime import datetime
     try:
@@ -131,13 +140,27 @@ def create_output_directory(video_title: str, channel_name: str = "default") -> 
         # Create the structured path: ./output/{channel name}/{video title}
         output_base = os.path.join(base_dir, "output")
         channel_dir = os.path.join(output_base, channel_name)
-        video_dir = os.path.join(channel_dir, safe_video_title)
+        main_video_dir = os.path.join(channel_dir, safe_video_title)  # This is the main video folder
+        
+        # Create subdirectories inside the main video folder
+        images_dir = os.path.join(main_video_dir, "images")
+        voice_over_dir = os.path.join(main_video_dir, "voice-over")
+        prompts_dir = os.path.join(main_video_dir, "prompts")
+        final_files_dir = os.path.join(main_video_dir, safe_video_title)  # Folder for final files
         
         # Create all directories in the path
-        os.makedirs(video_dir, exist_ok=True)
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(voice_over_dir, exist_ok=True)
+        os.makedirs(prompts_dir, exist_ok=True)
+        os.makedirs(final_files_dir, exist_ok=True)
         
-        logging.info(f"Created output directory: {video_dir}")
-        return video_dir
+        logging.info(f"Created output directory structure: {main_video_dir}")
+        logging.info(f"  - Images: {images_dir}")
+        logging.info(f"  - Voice-over: {voice_over_dir}")
+        logging.info(f"  - Prompts: {prompts_dir}")
+        logging.info(f"  - Final files: {final_files_dir}")
+        
+        return final_files_dir  # Return the final files directory where final files will be saved
     except Exception as e:
         logging.error(f"Failed to create output directory: {str(e)}")
         # Fall back to simple structure with safe title
@@ -552,9 +575,31 @@ def title_to_safe_folder_name(title: str) -> str:
         safe_title = f"video_{timestamp}_{hash_short}"
     
     # Truncate if too long (Windows path limit consideration)
-    # Windows has a 260 character path limit, so we need to be conservative
-    if len(safe_title) > 100:  # Leave room for file extensions and path
-        safe_title = safe_title[:100].rstrip('-.')  # Remove trailing hyphens/dots after truncation
+    # Windows has a 260 character path limit, so we need to be very conservative
+    # Account for: base_path (~30) + folder_name + nested_folder + file_extension (~10)
+    # So we limit folder names to 50 characters to be safe
+    if len(safe_title) > 50:
+        safe_title = safe_title[:50].rstrip('-.')  # Remove trailing hyphens/dots after truncation
+    
+    return safe_title
+
+def title_to_safe_file_name(title: str) -> str:
+    """
+    Convert a title to a safe file name (shorter than folder name for nested paths).
+    
+    Args:
+        title: The original title to convert
+        
+    Returns:
+        A safe file name that can be used for files inside nested folders
+    """
+    # Use the same conversion as folder name but with shorter limit
+    safe_title = title_to_safe_folder_name(title)
+    
+    # For file names in nested folders, be even more conservative
+    # Limit to 30 characters to account for path length
+    if len(safe_title) > 30:
+        safe_title = safe_title[:30].rstrip('-.')
     
     return safe_title
 
