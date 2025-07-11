@@ -754,6 +754,32 @@ class GenerationWorker(BaseWorker):
                             top = (new_height - 720) // 2
                             img = img.crop((0, top, 1280, top + 720))
                         
+                        # Apply image adjustments: reduce saturation and increase brightness
+                        self.logger.info("Applying image adjustments: reducing saturation and increasing brightness...")
+                        try:
+                            from PIL import ImageEnhance
+                            
+                            # Convert to RGB if needed (in case of RGBA)
+                            if img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            # Reduce saturation by 20%
+                            saturation_factor = 0.7  # 70% of original saturation
+                            saturation_enhancer = ImageEnhance.Color(img)
+                            img = saturation_enhancer.enhance(saturation_factor)
+                            
+                            # Increase brightness by 15%
+                            brightness_factor = 1.45  # 145% of original brightness
+                            brightness_enhancer = ImageEnhance.Brightness(img)
+                            img = brightness_enhancer.enhance(brightness_factor)
+                            
+                            self.logger.info(f"Applied adjustments: saturation {saturation_factor*100:.0f}%, brightness {brightness_factor*100:.0f}%")
+                            
+                        except ImportError:
+                            self.logger.warning("ImageEnhance not available, skipping image adjustments")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to apply image adjustments: {e}")
+                        
                         # Save the final image in main directory with proper filename
                         safe_title = self._get_safe_video_title()
                         thumbnail_path = os.path.join(output_dir, f'{safe_title}.jpg')
@@ -1027,8 +1053,24 @@ class GenerationWorker(BaseWorker):
             # Check system resources before starting intensive video processing
             self._check_system_resources()
             
-            # Create zoomed clips for each image
+            # Calculate image sequence duration and required loops
+            image_duration = 5  # Each image gets 5 seconds
+            sequence_duration = num_images * image_duration  # Total duration of one complete sequence
+            required_loops = math.ceil(audio_duration / sequence_duration)
+            total_video_duration = required_loops * sequence_duration
+            
+            self.logger.info(f"📊 Video Assembly Plan:")
+            self.logger.info(f"   - Audio duration: {audio_duration:.2f} seconds")
+            self.logger.info(f"   - Images: {num_images}")
+            self.logger.info(f"   - Image duration: {image_duration} seconds each")
+            self.logger.info(f"   - Sequence duration: {sequence_duration} seconds")
+            self.logger.info(f"   - Required loops: {required_loops}")
+            self.logger.info(f"   - Total video duration: {total_video_duration:.2f} seconds")
+            
+            # Create zoomed clips for each image (5 seconds each)
             zoom_clips = []
+            used_zoom_effects = []  # Track used zoom effects to avoid repetition
+            
             for idx in range(1, num_images + 1):
                 self._check_cancelled()
                 
@@ -1042,7 +1084,6 @@ class GenerationWorker(BaseWorker):
                 images_dir = paths['images']
                 img = os.path.join(images_dir, f"image{idx}.jpg")
                 out_clip = os.path.join(self.temp_dir, f'zoom{idx}.mp4')
-                zoom_clips.append(os.path.abspath(out_clip))
 
                 # Verify input image exists
                 if not os.path.exists(img):
@@ -1050,110 +1091,62 @@ class GenerationWorker(BaseWorker):
 
                 speed = 0.001
                 zoom_directions = [
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':d=120:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='0':d=120:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='0':d=120:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='trunc(ih-(ih/zoom))':d=120:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='trunc(ih-(ih/zoom))':d=120:fps=30,scale=1920:1080",
+                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':d=150:fps=30,scale=1920:1080",
+                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='0':d=150:fps=30,scale=1920:1080",
+                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='0':d=150:fps=30,scale=1920:1080",
+                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
+                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
                 ]
 
-                zoom_filter = random.choice(zoom_directions)
+                # Select zoom effect avoiding repetition with adjacent images
+                available_effects = [i for i in range(len(zoom_directions)) if i not in used_zoom_effects[-2:]]  # Avoid last 2 used effects
                 
-                self.logger.info(f"Processing image {idx}/{num_images} - Creating zoom effect...")
+                if not available_effects:
+                    # If all effects have been used recently, reset and use any except the last one
+                    available_effects = [i for i in range(len(zoom_directions)) if i != used_zoom_effects[-1]] if used_zoom_effects else list(range(len(zoom_directions)))
+                
+                selected_effect_idx = random.choice(available_effects)
+                zoom_filter = zoom_directions[selected_effect_idx]
+                used_zoom_effects.append(selected_effect_idx)
+                
+                self.logger.info(f"Processing image {idx}/{num_images} - Creating {image_duration}s zoom effect...")
                 self.logger.info(f"Using zoom filter: {zoom_filter}")
                 
-                if idx < num_images:
-                    duration = 4  # zoom_duration
-                    out_clip = os.path.join(self.temp_dir, f'zoom{idx}.mp4')
-                    zoom_clips.append(os.path.abspath(out_clip))
-
-                    # Verify input image exists
-                    if not os.path.exists(img):
-                        raise Exception(f"Input image not found: {img}")
-
-                    cmd = [
-                        'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
-                        '-preset', 'ultrafast',
-                        '-threads', '4',  # Reduced thread count to prevent resource exhaustion
-                        '-vf', zoom_filter,
-                        '-s', '1920x1080',
-                        '-t', str(duration), '-pix_fmt', 'yuv420p', 
-                        out_clip
-                    ]
-                    
-                    # Try the command with a shorter timeout first
-                    try:
-                        self._safe_subprocess_run(cmd, timeout=180)  # Reduced timeout
-                    except Exception as e:
-                        if "timeout" in str(e).lower() or "zoompan" in str(e).lower():
-                            self.logger.warning(f"Zoom effect failed, trying simpler approach for image {idx}")
-                            # Use a much simpler approach without complex zoompan
-                            simple_cmd = [
-                                'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
-                                '-preset', 'ultrafast',
-                                '-threads', '2',
-                                '-vf', 'scale=1920:1080',
-                                '-t', str(duration), '-pix_fmt', 'yuv420p',
-                                out_clip
-                            ]
-                            self._safe_subprocess_run(simple_cmd, timeout=60)
-                        else:
-                            raise
-                else:
-                    # Apply particle effect to the last image
-                    particle_effect = os.path.join(self.temp_dir, 'last_with_particles.mp4')
-                    extended_particle_effect = os.path.join(self.temp_dir, 'extended_last_with_particles.mp4')
-
-                    particles_path = get_resource_path(os.path.join("reference", "particles.webm"))
-                    self.logger.info(f"Looking for particles.webm at: {particles_path}")
-                    
-                    if not os.path.exists(particles_path):
-                        # Log some debug information
-                        self.logger.error(f"particles.webm not found at {particles_path}")
-                        self.logger.info(f"Current working directory: {os.getcwd()}")
-                        self.logger.info(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
-                        meipass = getattr(sys, '_MEIPASS', None)
-                        if meipass is not None:
-                            self.logger.info(f"PyInstaller temp path: {meipass}")
-                        
-                        # Try to find any particles.webm file
-                        for root, dirs, files in os.walk(os.getcwd()):
-                            if "particles.webm" in files:
-                                self.logger.info(f"Found particles.webm at: {os.path.join(root, 'particles.webm')}")
-                                break
-                        else:
-                            self.logger.error("particles.webm not found anywhere in current directory tree")
-                        
-                        raise Exception(f"particles.webm file not found. Expected at: {particles_path}")
-                    
-                    particle_loops = math.ceil(audio_duration / self._get_duration(particles_path))
-                    
-                    # Combine image with particle effect
-                    cmd_particle = [
-                        'ffmpeg', '-loop', '1', '-i', os.path.abspath(img), 
-                        '-i', os.path.abspath(particles_path),
-                        '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
-                        "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
-                        "[bg][particles]overlay=format=auto",
-                        '-shortest', '-pix_fmt', 'yuv420p',
-                        '-s', '1920x1080', "-y", particle_effect
-                    ]
-                    self._safe_subprocess_run(cmd_particle, timeout=450)
-
-                    # Extend the particle effect video
-                    cmd_extend = [
-                        'ffmpeg', '-stream_loop', f'{str(particle_loops)}', '-i', particle_effect,
-                        '-c', 'copy', extended_particle_effect
-                    ]
-                    self._safe_subprocess_run(cmd_extend, timeout=300)
-
-                    zoom_clips[-1] = os.path.abspath(extended_particle_effect)
+                cmd = [
+                    'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
+                    '-preset', 'ultrafast',
+                    '-threads', '4',  # Reduced thread count to prevent resource exhaustion
+                    '-vf', zoom_filter,
+                    '-s', '1920x1080',
+                    '-t', str(image_duration), '-pix_fmt', 'yuv420p', 
+                    out_clip
+                ]
+                
+                # Try the command with a shorter timeout first
+                try:
+                    self._safe_subprocess_run(cmd, timeout=180)  # Reduced timeout
+                except Exception as e:
+                    if "timeout" in str(e).lower() or "zoompan" in str(e).lower():
+                        self.logger.warning(f"Zoom effect failed, trying simpler approach for image {idx}")
+                        # Use a much simpler approach without complex zoompan
+                        simple_cmd = [
+                            'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
+                            '-preset', 'ultrafast',
+                            '-threads', '2',
+                            '-vf', 'scale=1920:1080',
+                            '-t', str(image_duration), '-pix_fmt', 'yuv420p',
+                            out_clip
+                        ]
+                        self._safe_subprocess_run(simple_cmd, timeout=60)
+                    else:
+                        raise
 
                 # Verify output file was created
-                if not os.path.exists(out_clip if idx < num_images else extended_particle_effect):
+                if not os.path.exists(out_clip):
                     raise Exception(f"Failed to create video clip for image {idx}")
-
-                self.progress_update.emit(int(65 + idx / num_images * 25))
+                
+                zoom_clips.append(os.path.abspath(out_clip))
+                self.progress_update.emit(int(65 + idx / num_images * 15))
 
             self.logger.info("Converting clips to transport stream format...")
             # Convert clips to transport stream format
@@ -1174,21 +1167,84 @@ class GenerationWorker(BaseWorker):
                     
                 ts_clips.append(ts_path)
                 # Update progress for TS conversion
-                self.progress_update.emit(int(90 + (i / len(zoom_clips)) * 5))
+                self.progress_update.emit(int(80 + (i / len(zoom_clips)) * 5))
 
-            self.logger.info("Concatenating video clips...")
-            # Concatenate video clips
-            full_video = os.path.join(self.temp_dir, 'slideshow.mp4')
+            self.logger.info("Creating single sequence video...")
+            # Create single sequence video
+            single_sequence = os.path.join(self.temp_dir, 'single_sequence.mp4')
             concat_input = '|'.join(ts_clips)
             self._safe_subprocess_run([
                 "ffmpeg", "-y", "-i", f"concat:{concat_input}",
-                "-c", "copy", "-bsf:a", "aac_adtstoasc", full_video
+                "-c", "copy", "-bsf:a", "aac_adtstoasc", single_sequence
             ], timeout=1200)  # Increased timeout for concatenation
-            self.progress_update.emit(95)  # Update progress after concatenation
+            
+            # Verify single sequence
+            if not os.path.exists(single_sequence):
+                raise Exception("Failed to create single sequence video")
 
-            # Verify concatenation
-            if not os.path.exists(full_video):
-                raise Exception("Failed to concatenate video clips")
+            self.logger.info(f"Creating looped video ({required_loops} loops)...")
+            # Create looped video that matches or exceeds audio duration
+            looped_video = os.path.join(self.temp_dir, 'looped_video.mp4')
+            self._safe_subprocess_run([
+                "ffmpeg", "-y", "-stream_loop", str(required_loops), "-i", single_sequence,
+                "-c", "copy", "-t", str(total_video_duration), looped_video
+            ], timeout=1800)  # Increased timeout for looping
+            
+            # Verify looped video
+            if not os.path.exists(looped_video):
+                raise Exception("Failed to create looped video")
+
+            self.logger.info("Applying particle effects to entire video...")
+            # Apply particle effects to the entire video
+            particles_path = get_resource_path(os.path.join("reference", "particles.webm"))
+            self.logger.info(f"Looking for particles.webm at: {particles_path}")
+            
+            if not os.path.exists(particles_path):
+                # Log some debug information
+                self.logger.error(f"particles.webm not found at {particles_path}")
+                self.logger.info(f"Current working directory: {os.getcwd()}")
+                self.logger.info(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+                meipass = getattr(sys, '_MEIPASS', None)
+                if meipass is not None:
+                    self.logger.info(f"PyInstaller temp path: {meipass}")
+                
+                # Try to find any particles.webm file
+                for root, dirs, files in os.walk(os.getcwd()):
+                    if "particles.webm" in files:
+                        self.logger.info(f"Found particles.webm at: {os.path.join(root, 'particles.webm')}")
+                        break
+                else:
+                    self.logger.error("particles.webm not found anywhere in current directory tree")
+                
+                raise Exception(f"particles.webm file not found. Expected at: {particles_path}")
+            
+            # Calculate how many times to loop the particle effect to cover the entire video
+            particle_duration = self._get_duration(particles_path)
+            particle_loops = math.ceil(total_video_duration / particle_duration)
+            
+            # Create extended particle effect
+            extended_particles = os.path.join(self.temp_dir, 'extended_particles.mp4')
+            self._safe_subprocess_run([
+                'ffmpeg', '-stream_loop', str(particle_loops), '-i', particles_path,
+                '-c', 'copy', '-t', str(total_video_duration), extended_particles
+            ], timeout=600)
+            
+            # Combine video with particle effects
+            video_with_particles = os.path.join(self.temp_dir, 'video_with_particles.mp4')
+            cmd_particle = [
+                'ffmpeg', '-y', '-i', looped_video, 
+                '-i', extended_particles,
+                '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
+                "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
+                "[bg][particles]overlay=format=auto",
+                '-c:v', 'libx264', '-preset', 'ultrafast',
+                '-pix_fmt', 'yuv420p', '-s', '1920x1080', video_with_particles
+            ]
+            self._safe_subprocess_run(cmd_particle, timeout=1800)
+            
+            # Verify video with particles
+            if not os.path.exists(video_with_particles):
+                raise Exception("Failed to apply particle effects to video")
 
             self.logger.info("Combining video with audio and subtitles...")
             # Combine video with audio and subtitles
@@ -1215,7 +1271,7 @@ class GenerationWorker(BaseWorker):
                     self.logger.warning(f"Background music file not found: {self.background_music_path}")
                     # Proceed without background music
                     cmd_final = [
-                        'ffmpeg', '-y', '-i', full_video, '-i', merged_audio_path,
+                        'ffmpeg', '-y', '-i', video_with_particles, '-i', merged_audio_path,
                         '-c:v', 'libx264', '-c:a', 'aac',
                         '-vf', f"subtitles='{escaped_srt_path}':force_style='FontSize=16,Bold=1,FontName={font_name},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,Outline=1,Shadow=1,BackColour=&H000000&'",
                         '-shortest', 
@@ -1224,7 +1280,7 @@ class GenerationWorker(BaseWorker):
                 else:
                     cmd_final = [
                         'ffmpeg', '-y', 
-                        '-i', full_video, 
+                        '-i', video_with_particles, 
                         '-i', merged_audio_path,
                         '-stream_loop', '-1', '-i', os.path.abspath(self.background_music_path),
                         '-c:v', 'libx264', 
@@ -1240,7 +1296,7 @@ class GenerationWorker(BaseWorker):
                     ]
             else:
                 cmd_final = [
-                    'ffmpeg', '-y', '-i', full_video, '-i', merged_audio_path,
+                    'ffmpeg', '-y', '-i', video_with_particles, '-i', merged_audio_path,
                     '-c:v', 'libx264', '-c:a', 'aac',
                     '-vf', f"subtitles='{escaped_srt_path}':force_style='FontSize=16,Bold=1,FontName={font_name},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,Outline=1,Shadow=1,BackColour=&H000000&'",
                     '-shortest', 

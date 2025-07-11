@@ -118,31 +118,75 @@ class AccountManager:
                 
                 # Test the credentials by getting user info
                 youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
-                response = youtube.channels().list(part="snippet", mine=True).execute()
                 
-                if not response.get('items'):
-                    self.log("Failed to get channel info for new account", "error")
-                    return False
-                
-                # Get channel information
-                channel_id = response['items'][0]['id']
-                channel_title = response['items'][0]['snippet']['title']
-                
-                # Serialize credentials to bytes
-                credentials_bytes = pickle.dumps(credentials)
-                
-                # Store account with channel info directly
-                self.accounts[name] = {
-                    'credentials': credentials_bytes,
-                    'display_name': name,
-                    'channel_id': channel_id,
-                    'channel_title': channel_title
-                }
-                
-                self.current_account = name
-                self.save_accounts()
-                self.log(f"Added new account: {name} for channel: {channel_title}")
-                return True
+                # First, try to get basic account info to verify authentication worked
+                try:
+                    # Try to get user info first (this should work even without YouTube channel)
+                    response = youtube.channels().list(part="snippet", mine=True).execute()
+                    
+                    if not response.get('items'):
+                        # No YouTube channel found, but authentication worked
+                        self.log(f"Authentication successful for {name}, but no YouTube channel found", "warning")
+                        
+                        # Store account without channel info - user can add channel later
+                        credentials_bytes = pickle.dumps(credentials)
+                        self.accounts[name] = {
+                            'credentials': credentials_bytes,
+                            'display_name': name,
+                            'channel_id': 'no_channel',
+                            'channel_title': 'No YouTube Channel',
+                            'needs_channel_setup': True
+                        }
+                        
+                        self.current_account = name
+                        self.save_accounts()
+                        self.log(f"Added account {name} without YouTube channel - channel setup needed")
+                        return True
+                    
+                    # Get channel information
+                    channel_id = response['items'][0]['id']
+                    channel_title = response['items'][0]['snippet']['title']
+                    
+                    # Serialize credentials to bytes
+                    credentials_bytes = pickle.dumps(credentials)
+                    
+                    # Store account with channel info directly
+                    self.accounts[name] = {
+                        'credentials': credentials_bytes,
+                        'display_name': name,
+                        'channel_id': channel_id,
+                        'channel_title': channel_title
+                    }
+                    
+                    self.current_account = name
+                    self.save_accounts()
+                    self.log(f"Added new account: {name} for channel: {channel_title}")
+                    return True
+                    
+                except Exception as api_error:
+                    error_str = str(api_error)
+                    if "youtubeSignupRequired" in error_str or "401" in error_str:
+                        # Handle the specific YouTube signup required error
+                        self.log(f"YouTube signup required for account {name}. This account needs to create a YouTube channel first.", "warning")
+                        
+                        # Store account anyway - user can set up YouTube channel later
+                        credentials_bytes = pickle.dumps(credentials)
+                        self.accounts[name] = {
+                            'credentials': credentials_bytes,
+                            'display_name': name,
+                            'channel_id': 'signup_required',
+                            'channel_title': 'YouTube Signup Required',
+                            'needs_channel_setup': True,
+                            'signup_required': True
+                        }
+                        
+                        self.current_account = name
+                        self.save_accounts()
+                        self.log(f"Added account {name} - YouTube channel setup required")
+                        return True
+                    else:
+                        # Re-raise other API errors
+                        raise api_error
                 
             except Exception as e:
                 self.log(f"Error adding account: {str(e)}", "error")
@@ -154,14 +198,24 @@ class AccountManager:
                 
                 # Try to get channel info
                 youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
-                response = youtube.channels().list(part="snippet", mine=True).execute()
                 
-                if response.get('items'):
-                    channel_id = response['items'][0]['id']
-                    channel_title = response['items'][0]['snippet']['title']
-                else:
-                    channel_id = "unknown"
-                    channel_title = "Unknown Channel"
+                try:
+                    response = youtube.channels().list(part="snippet", mine=True).execute()
+                    
+                    if response.get('items'):
+                        channel_id = response['items'][0]['id']
+                        channel_title = response['items'][0]['snippet']['title']
+                    else:
+                        channel_id = "no_channel"
+                        channel_title = "No YouTube Channel"
+                except Exception as api_error:
+                    error_str = str(api_error)
+                    if "youtubeSignupRequired" in error_str or "401" in error_str:
+                        channel_id = "signup_required"
+                        channel_title = "YouTube Signup Required"
+                    else:
+                        channel_id = "unknown"
+                        channel_title = "Unknown Channel"
                 
                 self.accounts[name] = {
                     'credentials': credentials_bytes,
@@ -552,6 +606,68 @@ class AccountManager:
         
         return self.accounts[account_name].get('statistics')
 
+    def needs_channel_setup(self, name=None):
+        """Check if an account needs YouTube channel setup"""
+        account_name = name if name else self.current_account
+        
+        if not account_name or account_name not in self.accounts:
+            return False
+        
+        account_info = self.accounts[account_name]
+        return account_info.get('needs_channel_setup', False)
+    
+    def needs_youtube_signup(self, name=None):
+        """Check if an account needs YouTube signup"""
+        account_name = name if name else self.current_account
+        
+        if not account_name or account_name not in self.accounts:
+            return False
+        
+        account_info = self.accounts[account_name]
+        return account_info.get('signup_required', False)
+    
+    def setup_youtube_channel(self, name):
+        """Attempt to set up YouTube channel for an account that needs it"""
+        if name not in self.accounts:
+            self.log(f"Account {name} not found", "error")
+            return False
+        
+        credentials = self.get_account_credentials(name)
+        if not credentials:
+            return False
+        
+        try:
+            youtube = build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
+            
+            # Try to get channel info again
+            response = youtube.channels().list(part="snippet", mine=True).execute()
+            
+            if response.get('items'):
+                # Channel is now available
+                channel_id = response['items'][0]['id']
+                channel_title = response['items'][0]['snippet']['title']
+                
+                # Update account info
+                self.accounts[name]['channel_id'] = channel_id
+                self.accounts[name]['channel_title'] = channel_title
+                self.accounts[name]['needs_channel_setup'] = False
+                self.accounts[name]['signup_required'] = False
+                
+                self.save_accounts()
+                self.log(f"Successfully set up YouTube channel for {name}: {channel_title}")
+                return True
+            else:
+                self.log(f"No YouTube channel found for {name} - user needs to create one manually", "warning")
+                return False
+                
+        except Exception as e:
+            error_str = str(e)
+            if "youtubeSignupRequired" in error_str or "401" in error_str:
+                self.log(f"YouTube signup still required for {name} - user needs to create YouTube channel first", "warning")
+            else:
+                self.log(f"Error setting up YouTube channel: {str(e)}", "error")
+            return False
+
 
 class AccountManagerDialog(QDialog):
     """Dialog for managing Google accounts"""
@@ -608,12 +724,18 @@ class AccountManagerDialog(QDialog):
         self.reauth_btn.setEnabled(False)
         self.reauth_btn.setStyleSheet("background-color: #e74c3c; color: white;")
         
+        self.setup_channel_btn = QPushButton("Setup Channel")
+        self.setup_channel_btn.clicked.connect(self.setup_channel)
+        self.setup_channel_btn.setEnabled(False)
+        self.setup_channel_btn.setStyleSheet("background-color: #f39c12; color: white;")
+        
         account_buttons_layout.addWidget(self.add_account_btn)
         account_buttons_layout.addWidget(self.rename_account_btn)
         account_buttons_layout.addWidget(self.remove_account_btn)
         account_buttons_layout.addWidget(self.refresh_btn)
         account_buttons_layout.addWidget(self.refresh_views_btn)
         account_buttons_layout.addWidget(self.reauth_btn)
+        account_buttons_layout.addWidget(self.setup_channel_btn)
         
         accounts_layout.addLayout(account_buttons_layout)
         accounts_group.setLayout(accounts_layout)
@@ -668,6 +790,16 @@ class AccountManagerDialog(QDialog):
                 item.setForeground(QColor(231, 76, 60))  # Red
                 item.setText(f"{account} (Re-authentication needed)")
                 
+            # Check if account needs channel setup
+            if self.account_manager.needs_channel_setup(account):
+                item.setForeground(QColor(230, 126, 34))  # Orange
+                item.setText(f"{account} (Channel setup needed)")
+                
+            # Check if account needs YouTube signup
+            if self.account_manager.needs_youtube_signup(account):
+                item.setForeground(QColor(231, 76, 60))  # Red
+                item.setText(f"{account} (YouTube signup needed)")
+            
             self.account_list.addItem(item)
             
         # Select the current account if available
@@ -686,9 +818,14 @@ class AccountManagerDialog(QDialog):
             self.refresh_btn.setEnabled(False)
             self.refresh_views_btn.setEnabled(False)
             self.reauth_btn.setEnabled(False)
+            self.setup_channel_btn.setEnabled(False)
             return
             
-        account_name = self.account_list.item(row).text().split(" (")[0]  # Remove any status text
+        item = self.account_list.item(row)
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]  # Remove any status text
         
         # Enable buttons for account actions
         self.rename_account_btn.setEnabled(True)
@@ -700,6 +837,11 @@ class AccountManagerDialog(QDialog):
         needs_reauth = self.account_manager.needs_reauthentication(account_name)
         self.reauth_btn.setEnabled(needs_reauth)
         self.reauth_btn.setVisible(needs_reauth)
+
+        # Check if channel setup is needed
+        needs_channel_setup = self.account_manager.needs_channel_setup(account_name)
+        self.setup_channel_btn.setEnabled(needs_channel_setup)
+        self.setup_channel_btn.setVisible(needs_channel_setup)
         
         # Update channel info
         account_info = self.account_manager.accounts.get(account_name, {})
@@ -710,6 +852,8 @@ class AccountManagerDialog(QDialog):
         
         if needs_reauth:
             info_text += "\n\n⚠️ This account needs to be re-authenticated before it can be used."
+        if needs_channel_setup:
+            info_text += "\n\n⚠️ This account needs to set up a YouTube channel."
             
         self.channel_info_label.setText(info_text)
         
@@ -753,7 +897,11 @@ class AccountManagerDialog(QDialog):
         if row < 0:
             return
             
-        account_name = self.account_list.item(row).text().split(" (")[0]  # Remove any status text
+        item = self.account_list.item(row)
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]  # Remove any status text
         
         if self.account_manager.refresh_channel_info(account_name):
             # Also refresh statistics
@@ -788,13 +936,36 @@ class AccountManagerDialog(QDialog):
                 channel_info = self.account_manager.accounts[name]
                 channel_title = channel_info.get('channel_title', 'Unknown Channel')
                 
-                # Automatically fetch and display statistics
-                self.account_manager.get_channel_statistics(name)
-                self.update_statistics_display(name)
-                
-                QMessageBox.information(self, "Success", 
-                                      f"Account '{name}' was added successfully\n"
-                                      f"Channel: {channel_title}")
+                # Check if this account needs channel setup
+                if self.account_manager.needs_channel_setup(name):
+                    if self.account_manager.needs_youtube_signup(name):
+                        QMessageBox.information(
+                            self, "Account Added - YouTube Signup Required", 
+                            f"Account '{name}' was added successfully!\n\n"
+                            f"⚠️ This account needs to create a YouTube channel first.\n\n"
+                            f"To set up the YouTube channel:\n"
+                            f"1. Go to https://www.youtube.com\n"
+                            f"2. Sign in with this Google account\n"
+                            f"3. Create a YouTube channel\n"
+                            f"4. Come back and click 'Setup Channel' button\n\n"
+                            f"The account is ready to use once the YouTube channel is created."
+                        )
+                    else:
+                        QMessageBox.information(
+                            self, "Account Added - Channel Setup Needed", 
+                            f"Account '{name}' was added successfully!\n\n"
+                            f"⚠️ This account needs to set up a YouTube channel.\n\n"
+                            f"Click the 'Setup Channel' button to attempt automatic setup,\n"
+                            f"or manually create a YouTube channel for this account."
+                        )
+                else:
+                    # Automatically fetch and display statistics
+                    self.account_manager.get_channel_statistics(name)
+                    self.update_statistics_display(name)
+                    
+                    QMessageBox.information(self, "Success", 
+                                          f"Account '{name}' was added successfully\n"
+                                          f"Channel: {channel_title}")
             else:
                 QMessageBox.critical(self, "Error", f"Failed to add account '{name}'")
     
@@ -803,7 +974,11 @@ class AccountManagerDialog(QDialog):
         if not self.account_list.currentItem():
             return
             
-        old_name = self.account_list.currentItem().text().split(" (")[0]
+        item = self.account_list.currentItem()
+        if not item:
+            return
+            
+        old_name = item.text().split(" (")[0]
         new_name, ok = QInputDialog.getText(
             self, "Rename Account", 
             "Enter new account name:", 
@@ -821,7 +996,11 @@ class AccountManagerDialog(QDialog):
         if not self.account_list.currentItem():
             return
             
-        account_name = self.account_list.currentItem().text().split(" (")[0]
+        item = self.account_list.currentItem()
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]
         
         reply = QMessageBox.question(
             self, "Confirm Removal",
@@ -842,7 +1021,11 @@ class AccountManagerDialog(QDialog):
         if row < 0:
             return
             
-        account_name = self.account_list.item(row).text().split(" (")[0]  # Remove any status text
+        item = self.account_list.item(row)
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]  # Remove any status text
         
         # Confirm re-authentication
         reply = QMessageBox.question(
@@ -892,11 +1075,33 @@ class AccountManagerDialog(QDialog):
                     f"Failed to re-authenticate account '{account_name}'"
                 )
     
+    def setup_channel(self):
+        """Attempt to set up YouTube channel for the selected account"""
+        row = self.account_list.currentRow()
+        if row < 0:
+            return
+            
+        item = self.account_list.item(row)
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]  # Remove any status text
+        
+        if self.account_manager.setup_youtube_channel(account_name):
+            self.refresh_account_list()
+            QMessageBox.information(self, "Success", f"YouTube channel setup for '{account_name}' was successful.")
+        else:
+            QMessageBox.warning(self, "Warning", f"Failed to set up YouTube channel for '{account_name}'.")
+    
     def accept(self):
         """Accept dialog and emit signal with selected account"""
         row = self.account_list.currentRow()
         if row >= 0:
-            account_name = self.account_list.item(row).text().split(" (")[0]
+            item = self.account_list.item(row)
+            if not item:
+                return
+                
+            account_name = item.text().split(" (")[0]
             
             # Check if account needs re-authentication
             if self.account_manager.needs_reauthentication(account_name):
@@ -907,6 +1112,31 @@ class AccountManagerDialog(QDialog):
                     "Please click the 'Re-authenticate' button before selecting this account."
                 )
                 return
+            
+            # Check if account needs channel setup
+            if self.account_manager.needs_channel_setup(account_name):
+                if self.account_manager.needs_youtube_signup(account_name):
+                    QMessageBox.warning(
+                        self, 
+                        "YouTube Channel Required",
+                        f"The account '{account_name}' needs to create a YouTube channel first.\n\n"
+                        "Please:\n"
+                        "1. Go to https://www.youtube.com\n"
+                        "2. Sign in with this Google account\n"
+                        "3. Create a YouTube channel\n"
+                        "4. Come back and click 'Setup Channel' button\n\n"
+                        "The account cannot be used until a YouTube channel is created."
+                    )
+                    return
+                else:
+                    QMessageBox.warning(
+                        self, 
+                        "Channel Setup Required",
+                        f"The account '{account_name}' needs to set up a YouTube channel.\n\n"
+                        "Please click the 'Setup Channel' button to attempt automatic setup,\n"
+                        "or manually create a YouTube channel for this account."
+                    )
+                    return
                 
             # Set as current account
             self.account_manager.current_account = account_name
@@ -934,7 +1164,11 @@ class AccountManagerDialog(QDialog):
         if row < 0:
             return
             
-        account_name = self.account_list.item(row).text().split(" (")[0]  # Remove any status text
+        item = self.account_list.item(row)
+        if not item:
+            return
+            
+        account_name = item.text().split(" (")[0]  # Remove any status text
         
         # Check if account needs re-authentication
         if self.account_manager.needs_reauthentication(account_name):
