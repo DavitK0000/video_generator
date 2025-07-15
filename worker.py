@@ -1089,57 +1089,90 @@ class GenerationWorker(BaseWorker):
                 if not os.path.exists(img):
                     raise Exception(f"Input image not found: {img}")
 
-                speed = 0.001
-                zoom_directions = [
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':d=150:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='0':d=150:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='0':d=150:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
-                    f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
-                ]
-
-                # Select zoom effect avoiding repetition with adjacent images
-                available_effects = [i for i in range(len(zoom_directions)) if i not in used_zoom_effects[-2:]]  # Avoid last 2 used effects
+                # Check if this is the last image (for static treatment)
+                is_last_image = (idx == num_images)
                 
-                if not available_effects:
-                    # If all effects have been used recently, reset and use any except the last one
-                    available_effects = [i for i in range(len(zoom_directions)) if i != used_zoom_effects[-1]] if used_zoom_effects else list(range(len(zoom_directions)))
-                
-                selected_effect_idx = random.choice(available_effects)
-                zoom_filter = zoom_directions[selected_effect_idx]
-                used_zoom_effects.append(selected_effect_idx)
-                
-                self.logger.info(f"Processing image {idx}/{num_images} - Creating {image_duration}s zoom effect...")
-                self.logger.info(f"Using zoom filter: {zoom_filter}")
-                
-                cmd = [
-                    'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
-                    '-preset', 'ultrafast',
-                    '-threads', '4',  # Reduced thread count to prevent resource exhaustion
-                    '-vf', zoom_filter,
-                    '-s', '1920x1080',
-                    '-t', str(image_duration), '-pix_fmt', 'yuv420p', 
-                    out_clip
-                ]
-                
-                # Try the command with a shorter timeout first
-                try:
-                    self._safe_subprocess_run(cmd, timeout=180)  # Reduced timeout
-                except Exception as e:
-                    if "timeout" in str(e).lower() or "zoompan" in str(e).lower():
-                        self.logger.warning(f"Zoom effect failed, trying simpler approach for image {idx}")
-                        # Use a much simpler approach without complex zoompan
+                if is_last_image:
+                    # For the last image, create a static clip without zoom effects
+                    self.logger.info(f"Processing last image {idx}/{num_images} - Creating static clip...")
+                    
+                    cmd = [
+                        'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
+                        '-preset', 'ultrafast',
+                        '-threads', '2',
+                        '-vf', 'scale=1920:1080',
+                        '-t', str(image_duration), '-pix_fmt', 'yuv420p',
+                        '-r', '30',  # Explicit frame rate
+                        out_clip
+                    ]
+                    
+                    try:
+                        self._safe_subprocess_run(cmd, timeout=120)
+                    except Exception as e:
+                        self.logger.warning(f"Static clip creation failed for last image {idx}: {e}")
+                        # Fallback to even simpler approach
                         simple_cmd = [
                             'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
                             '-preset', 'ultrafast',
-                            '-threads', '2',
+                            '-threads', '1',
                             '-vf', 'scale=1920:1080',
                             '-t', str(image_duration), '-pix_fmt', 'yuv420p',
                             out_clip
                         ]
                         self._safe_subprocess_run(simple_cmd, timeout=60)
-                    else:
-                        raise
+                else:
+                    # For all other images, use zoom effects
+                    speed = 0.001
+                    zoom_directions = [
+                        f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':d=150:fps=30,scale=1920:1080",
+                        f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='0':d=150:fps=30,scale=1920:1080",
+                        f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='0':d=150:fps=30,scale=1920:1080",
+                        f"scale=8000x4500, zoompan=z='zoom+{speed}':x='0':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
+                        f"scale=8000x4500, zoompan=z='zoom+{speed}':x='trunc(iw-(iw/zoom))':y='trunc(ih-(ih/zoom))':d=150:fps=30,scale=1920:1080",
+                    ]
+
+                    # Select zoom effect avoiding repetition with adjacent images
+                    available_effects = [i for i in range(len(zoom_directions)) if i not in used_zoom_effects[-2:]]  # Avoid last 2 used effects
+                    
+                    if not available_effects:
+                        # If all effects have been used recently, reset and use any except the last one
+                        available_effects = [i for i in range(len(zoom_directions)) if i != used_zoom_effects[-1]] if used_zoom_effects else list(range(len(zoom_directions)))
+                    
+                    selected_effect_idx = random.choice(available_effects)
+                    zoom_filter = zoom_directions[selected_effect_idx]
+                    used_zoom_effects.append(selected_effect_idx)
+                    
+                    self.logger.info(f"Processing image {idx}/{num_images} - Creating {image_duration}s zoom effect...")
+                    self.logger.info(f"Using zoom filter: {zoom_filter}")
+                    
+                    cmd = [
+                        'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
+                        '-preset', 'ultrafast',
+                        '-threads', '4',  # Reduced thread count to prevent resource exhaustion
+                        '-vf', zoom_filter,
+                        '-s', '1920x1080',
+                        '-t', str(image_duration), '-pix_fmt', 'yuv420p', 
+                        out_clip
+                    ]
+                    
+                    # Try the command with a shorter timeout first
+                    try:
+                        self._safe_subprocess_run(cmd, timeout=180)  # Reduced timeout
+                    except Exception as e:
+                        if "timeout" in str(e).lower() or "zoompan" in str(e).lower():
+                            self.logger.warning(f"Zoom effect failed, trying simpler approach for image {idx}")
+                            # Use a much simpler approach without complex zoompan
+                            simple_cmd = [
+                                'ffmpeg', '-y', '-loop', '1', '-i', os.path.abspath(img),
+                                '-preset', 'ultrafast',
+                                '-threads', '2',
+                                '-vf', 'scale=1920:1080',
+                                '-t', str(image_duration), '-pix_fmt', 'yuv420p',
+                                out_clip
+                            ]
+                            self._safe_subprocess_run(simple_cmd, timeout=60)
+                        else:
+                            raise
 
                 # Verify output file was created
                 if not os.path.exists(out_clip):
@@ -1148,12 +1181,20 @@ class GenerationWorker(BaseWorker):
                 zoom_clips.append(os.path.abspath(out_clip))
                 self.progress_update.emit(int(65 + idx / num_images * 15))
 
-            self.logger.info("Converting clips to transport stream format...")
-            # Convert clips to transport stream format
-            ts_clips = []
-            for i, clip in enumerate(zoom_clips, 1):
+            # Update progress for clip creation
+            self.progress_update.emit(80)
+
+            self.logger.info("Creating video with particles applied only to the last image...")
+            
+            # Create separate video segments: regular clips + last image with particles
+            regular_clips = zoom_clips[:-1]  # All clips except the last one
+            last_clip = zoom_clips[-1]  # The last clip (static)
+            
+            # Convert regular clips to TS format (without particles)
+            regular_ts_clips = []
+            for i, clip in enumerate(regular_clips, 1):
                 self._check_cancelled()
-                self.logger.info(f"Converting clip {i}/{len(zoom_clips)} to transport stream...")
+                self.logger.info(f"Converting regular clip {i}/{len(regular_clips)} to transport stream...")
                 ts_path = clip.replace(".mp4", ".ts")
                 self._safe_subprocess_run([
                     "ffmpeg", "-y", "-i", clip,
@@ -1161,41 +1202,12 @@ class GenerationWorker(BaseWorker):
                     "-f", "mpegts", ts_path
                 ], timeout=300)
                 
-                # Verify conversion
                 if not os.path.exists(ts_path):
-                    raise Exception(f"Failed to convert clip {i} to transport stream format")
+                    raise Exception(f"Failed to convert regular clip {i} to transport stream format")
                     
-                ts_clips.append(ts_path)
-                # Update progress for TS conversion
-                self.progress_update.emit(int(80 + (i / len(zoom_clips)) * 5))
-
-            self.logger.info("Creating single sequence video...")
-            # Create single sequence video
-            single_sequence = os.path.join(self.temp_dir, 'single_sequence.mp4')
-            concat_input = '|'.join(ts_clips)
-            self._safe_subprocess_run([
-                "ffmpeg", "-y", "-i", f"concat:{concat_input}",
-                "-c", "copy", "-bsf:a", "aac_adtstoasc", single_sequence
-            ], timeout=1200)  # Increased timeout for concatenation
+                regular_ts_clips.append(ts_path)
             
-            # Verify single sequence
-            if not os.path.exists(single_sequence):
-                raise Exception("Failed to create single sequence video")
-
-            self.logger.info(f"Creating looped video ({required_loops} loops)...")
-            # Create looped video that matches or exceeds audio duration
-            looped_video = os.path.join(self.temp_dir, 'looped_video.mp4')
-            self._safe_subprocess_run([
-                "ffmpeg", "-y", "-stream_loop", str(required_loops), "-i", single_sequence,
-                "-c", "copy", "-t", str(total_video_duration), looped_video
-            ], timeout=1800)  # Increased timeout for looping
-            
-            # Verify looped video
-            if not os.path.exists(looped_video):
-                raise Exception("Failed to create looped video")
-
-            self.logger.info("Applying particle effects to entire video...")
-            # Apply particle effects to the entire video
+            # Apply particles to the last image only
             particles_path = get_resource_path(os.path.join("reference", "particles.webm"))
             self.logger.info(f"Looking for particles.webm at: {particles_path}")
             
@@ -1218,33 +1230,76 @@ class GenerationWorker(BaseWorker):
                 
                 raise Exception(f"particles.webm file not found. Expected at: {particles_path}")
             
-            # Calculate how many times to loop the particle effect to cover the entire video
-            particle_duration = self._get_duration(particles_path)
-            particle_loops = math.ceil(total_video_duration / particle_duration)
+            # Get duration of the last clip
+            last_clip_duration = self._get_duration(last_clip)
             
-            # Create extended particle effect
+            # Calculate how many times to loop the particle effect to cover the last clip
+            particle_duration = self._get_duration(particles_path)
+            particle_loops = math.ceil(last_clip_duration / particle_duration)
+            
+            # Create extended particle effect for the last clip
             extended_particles = os.path.join(self.temp_dir, 'extended_particles.mp4')
             self._safe_subprocess_run([
                 'ffmpeg', '-stream_loop', str(particle_loops), '-i', particles_path,
-                '-c', 'copy', '-t', str(total_video_duration), extended_particles
+                '-c', 'copy', '-t', str(last_clip_duration), extended_particles
             ], timeout=600)
             
-            # Combine video with particle effects
-            video_with_particles = os.path.join(self.temp_dir, 'video_with_particles.mp4')
+            # Apply particles to the last clip only
+            last_clip_with_particles = os.path.join(self.temp_dir, 'last_clip_with_particles.mp4')
             cmd_particle = [
-                'ffmpeg', '-y', '-i', looped_video, 
+                'ffmpeg', '-y', '-i', last_clip, 
                 '-i', extended_particles,
                 '-filter_complex', "[0:v]scale=1920:1080,setsar=1[bg];"
                 "[1:v]scale=1920:1080,format=rgba,colorchannelmixer=aa=0.3[particles];"
                 "[bg][particles]overlay=format=auto",
                 '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-pix_fmt', 'yuv420p', '-s', '1920x1080', video_with_particles
+                '-pix_fmt', 'yuv420p', '-s', '1920x1080', last_clip_with_particles
             ]
             self._safe_subprocess_run(cmd_particle, timeout=1800)
             
-            # Verify video with particles
-            if not os.path.exists(video_with_particles):
-                raise Exception("Failed to apply particle effects to video")
+            # Verify last clip with particles
+            if not os.path.exists(last_clip_with_particles):
+                raise Exception("Failed to apply particle effects to last clip")
+            
+            # Convert last clip with particles to TS format
+            last_ts_clip = last_clip_with_particles.replace(".mp4", ".ts")
+            self._safe_subprocess_run([
+                "ffmpeg", "-y", "-i", last_clip_with_particles,
+                "-c", "copy", "-bsf:v", "h264_mp4toannexb",
+                "-f", "mpegts", last_ts_clip
+            ], timeout=300)
+            
+            if not os.path.exists(last_ts_clip):
+                raise Exception("Failed to convert last clip with particles to transport stream format")
+            
+            # Combine all TS clips (regular + last with particles)
+            all_ts_clips = regular_ts_clips + [last_ts_clip]
+            
+            # Create single sequence video with particles only on last image
+            single_sequence = os.path.join(self.temp_dir, 'single_sequence.mp4')
+            concat_input = '|'.join(all_ts_clips)
+            self._safe_subprocess_run([
+                "ffmpeg", "-y", "-i", f"concat:{concat_input}",
+                "-c", "copy", "-bsf:a", "aac_adtstoasc", single_sequence
+            ], timeout=1200)  # Increased timeout for concatenation
+            
+            # Verify single sequence
+            if not os.path.exists(single_sequence):
+                raise Exception("Failed to create single sequence video")
+            
+            # Create looped video that matches or exceeds audio duration
+            looped_video = os.path.join(self.temp_dir, 'looped_video.mp4')
+            self._safe_subprocess_run([
+                "ffmpeg", "-y", "-stream_loop", str(required_loops), "-i", single_sequence,
+                "-c", "copy", "-t", str(total_video_duration), looped_video
+            ], timeout=1800)  # Increased timeout for looping
+            
+            # Verify looped video
+            if not os.path.exists(looped_video):
+                raise Exception("Failed to create looped video")
+            
+            # Use the looped video directly (particles already applied to last image)
+            video_with_particles = looped_video
 
             self.logger.info("Combining video with audio and subtitles...")
             # Combine video with audio and subtitles
